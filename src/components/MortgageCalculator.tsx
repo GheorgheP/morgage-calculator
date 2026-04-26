@@ -1,0 +1,528 @@
+import { useMemo, useState } from "react"
+
+import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Separator } from "@/components/ui/separator"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import {
+  ToggleGroup,
+  ToggleGroupItem,
+} from "@/components/ui/toggle-group"
+
+import {
+  addMonths,
+  formatCurrency,
+  formatDate,
+  generateSchedule,
+  mergeCovers,
+  parseISODate,
+  type PrepaymentMode,
+} from "@/lib/mortgage"
+
+import { cn } from "@/lib/utils"
+
+function todayISO(): string {
+  const d = new Date()
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, "0")
+  const dd = String(d.getDate()).padStart(2, "0")
+  return `${yyyy}-${mm}-${dd}`
+}
+
+// Convert a string into a non-negative finite number, or 0 if invalid/empty.
+function toNumber(value: string): number {
+  if (value.trim() === "") return 0
+  const n = Number(value)
+  return Number.isFinite(n) && n >= 0 ? n : 0
+}
+
+export function MortgageCalculator() {
+  // --- Loan inputs (kept as strings for clean editing UX) ---
+  const [amountStr, setAmountStr] = useState("100000")
+  const [rateStr, setRateStr] = useState("5.5")
+  const [yearsStr, setYearsStr] = useState("25")
+  const [commissionStr, setCommissionStr] = useState("1") // percent
+  const [currency, setCurrency] = useState("EUR")
+  const [mode, setMode] = useState<PrepaymentMode>("shorten")
+  const [startDateStr, setStartDateStr] = useState<string>(todayISO())
+
+  // --- Recurring "auto" cover: amount applied every N months. ---
+  const [autoAmountStr, setAutoAmountStr] = useState("0")
+  const [autoEveryStr, setAutoEveryStr] = useState("12")
+
+  // Manual covers: month -> amount. A manual entry (even 0) ALWAYS wins over
+  // the auto schedule for that month, so you can skip a single auto cover by
+  // typing 0, or override a single auto with a different amount. Clearing the
+  // input removes the manual override and lets auto kick back in.
+  const [manualCovers, setManualCovers] = useState<Record<number, number>>({})
+
+  // Parsed inputs.
+  const amount = toNumber(amountStr)
+  const annualRate = toNumber(rateStr)
+  const termYears = Math.max(0, Math.floor(toNumber(yearsStr)))
+  const commissionRate = Math.max(0, toNumber(commissionStr) / 100)
+  const autoAmount = toNumber(autoAmountStr)
+  const autoEvery = Math.max(0, Math.floor(toNumber(autoEveryStr)))
+  const autoEnabled = autoAmount > 0 && autoEvery > 0
+
+  /** What the auto schedule would put in `month`, ignoring manual overrides. */
+  function autoCoverFor(month: number): number {
+    if (!autoEnabled) return 0
+    return month % autoEvery === 0 ? autoAmount : 0
+  }
+
+  // Merge manual + auto into a single map for the schedule generator.
+  const effectiveCovers = useMemo(
+    () =>
+      mergeCovers(
+        manualCovers,
+        { amount: autoAmount, every: autoEvery },
+        termYears * 12
+      ),
+    [manualCovers, autoAmount, autoEvery, termYears]
+  )
+
+  // Recompute the schedule on every relevant change.
+  const result = useMemo(
+    () =>
+      generateSchedule(
+        { amount, annualRate, termYears },
+        effectiveCovers,
+        mode,
+        commissionRate
+      ),
+    [amount, annualRate, termYears, effectiveCovers, mode, commissionRate]
+  )
+
+  const monthsSaved = result.monthsOriginal - result.monthsActual
+
+  const startDate = parseISODate(startDateStr)
+  // First installment is one month after the loan start (mortgage convention).
+  const payoffDate =
+    startDate && result.monthsActual > 0
+      ? addMonths(startDate, result.monthsActual)
+      : null
+
+  // What you would pay in total if you never prepaid.
+  const baselineTotal = useMemo(() => {
+    const baseline = generateSchedule(
+      { amount, annualRate, termYears },
+      {},
+      mode,
+      commissionRate
+    )
+    return baseline.totalPaid
+  }, [amount, annualRate, termYears, mode, commissionRate])
+
+  const interestSaved = Math.max(0, baselineTotal - result.totalPaid)
+
+  function setCoverFor(month: number, raw: string) {
+    setManualCovers((prev) => {
+      const next = { ...prev }
+      if (raw.trim() === "") {
+        // Empty input = remove manual override; auto (if any) takes over.
+        delete next[month]
+      } else {
+        // Any parseable number (including 0) becomes a manual override.
+        // Manual 0 explicitly skips the month (overrides any auto cover).
+        const n = Number(raw)
+        next[month] = Number.isFinite(n) && n >= 0 ? n : 0
+      }
+      return next
+    })
+  }
+
+  function clearManualCovers() {
+    setManualCovers({})
+  }
+
+  const currencyFmt = (n: number) => formatCurrency(n, currency)
+
+  return (
+    <div className="container py-8 max-w-6xl">
+      <header className="mb-8">
+        <h1 className="text-3xl font-semibold tracking-tight">
+          Credit Calculator
+        </h1>
+        <p className="text-muted-foreground mt-1">
+          Mortgage annuity loan — model prepayments and see their effect.
+        </p>
+      </header>
+
+      <div className="grid gap-6 md:grid-cols-3 mb-6">
+        <Card className="md:col-span-2">
+          <CardHeader>
+            <CardTitle>Loan</CardTitle>
+            <CardDescription>
+              Annuity (equal monthly installments) with monthly compounding.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-2">
+                <Label htmlFor="amount">Loan amount</Label>
+                <Input
+                  id="amount"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step={1000}
+                  value={amountStr}
+                  onChange={(e) => setAmountStr(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="rate">Annual interest rate (%)</Label>
+                <Input
+                  id="rate"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step={0.05}
+                  value={rateStr}
+                  onChange={(e) => setRateStr(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="years">Term (years)</Label>
+                <Input
+                  id="years"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={40}
+                  step={1}
+                  value={yearsStr}
+                  onChange={(e) => setYearsStr(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="startDate">Start date</Label>
+                <Input
+                  id="startDate"
+                  type="date"
+                  value={startDateStr}
+                  onChange={(e) => setStartDateStr(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="commission">
+                  Prepayment commission (%)
+                </Label>
+                <Input
+                  id="commission"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step={0.1}
+                  value={commissionStr}
+                  onChange={(e) => setCommissionStr(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="currency">Currency</Label>
+                <Input
+                  id="currency"
+                  type="text"
+                  maxLength={4}
+                  value={currency}
+                  onChange={(e) => setCurrency(e.target.value.toUpperCase())}
+                  placeholder="EUR"
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Prepayment mode</CardTitle>
+              <CardDescription>
+                How the bank should apply each prepayment.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ToggleGroup
+                type="single"
+                value={mode}
+                onValueChange={(v) => v && setMode(v as PrepaymentMode)}
+                variant="outline"
+                className="grid grid-cols-1 gap-2"
+              >
+                <ToggleGroupItem value="shorten" className="justify-start h-auto py-3 px-4 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">
+                  <div className="text-left">
+                    <div className="font-medium">Shorten period</div>
+                    <div className="text-xs opacity-80">
+                      Keep monthly payment, finish earlier.
+                    </div>
+                  </div>
+                </ToggleGroupItem>
+                <ToggleGroupItem value="lower" className="justify-start h-auto py-3 px-4 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">
+                  <div className="text-left">
+                    <div className="font-medium">Lower payment</div>
+                    <div className="text-xs opacity-80">
+                      Keep term, recompute installment.
+                    </div>
+                  </div>
+                </ToggleGroupItem>
+              </ToggleGroup>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Auto cover</CardTitle>
+              <CardDescription>
+                Apply a recurring prepayment automatically. Manual entries in
+                the table override this for individual months.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-3">
+                <div className="grid gap-2">
+                  <Label htmlFor="autoAmount">Amount</Label>
+                  <Input
+                    id="autoAmount"
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step={100}
+                    value={autoAmountStr}
+                    onChange={(e) => setAutoAmountStr(e.target.value)}
+                    placeholder="0"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="autoEvery">Every (months)</Label>
+                  <Input
+                    id="autoEvery"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    step={1}
+                    value={autoEveryStr}
+                    onChange={(e) => setAutoEveryStr(e.target.value)}
+                    placeholder="12"
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {autoEnabled
+                    ? `Applies on month ${autoEvery}, ${autoEvery * 2}, ${autoEvery * 3}, …`
+                    : "Set both fields above to enable."}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-4 mb-6">
+        <SummaryStat
+          label="Initial monthly"
+          value={currencyFmt(result.baseMonthlyPayment)}
+          hint={`Term: ${termYears}y · ${result.monthsOriginal} months`}
+        />
+        <SummaryStat
+          label="Total to pay"
+          value={currencyFmt(result.totalOutOfPocket)}
+          hint={`Installments: ${currencyFmt(result.totalPaid)}`}
+        />
+        <SummaryStat
+          label="Total interest"
+          value={currencyFmt(result.totalInterest)}
+          hint={
+            interestSaved > 0
+              ? `Saved vs no prepay: ${currencyFmt(interestSaved)}`
+              : "No prepayments yet"
+          }
+        />
+        <SummaryStat
+          label="Paid off on"
+          value={formatDate(payoffDate)}
+          hint={
+            mode === "shorten" && monthsSaved > 0
+              ? `${result.monthsActual} months (${monthsSaved} saved)`
+              : `${result.monthsActual} months`
+          }
+        />
+      </div>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <div>
+            <CardTitle>Amortization schedule</CardTitle>
+            <CardDescription>
+              Type a prepayment in the &ldquo;Cover&rdquo; column. A faded
+              placeholder marks months where the Auto cover will fire — type a
+              value to override it, or 0 to skip that month.
+              {commissionRate > 0
+                ? ` ${(commissionRate * 100).toFixed(2)}% commission is deducted from each cover.`
+                : ""}
+            </CardDescription>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={clearManualCovers}
+            disabled={Object.keys(manualCovers).length === 0}
+          >
+            Clear manual
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <Separator className="mb-4" />
+          <div className="max-h-[600px] overflow-auto rounded-md border">
+            <Table>
+              <TableHeader className="sticky top-0 bg-background z-10">
+                <TableRow>
+                  <TableHead className="w-12">#</TableHead>
+                  <TableHead className="w-32">Date</TableHead>
+                  <TableHead className="text-right">Payment</TableHead>
+                  <TableHead className="text-right">Interest</TableHead>
+                  <TableHead className="text-right">Principal</TableHead>
+                  <TableHead className="text-right">Cover</TableHead>
+                  <TableHead className="text-right">Commission</TableHead>
+                  <TableHead className="text-right">
+                    Reduces principal by
+                  </TableHead>
+                  <TableHead className="text-right">Out of pocket</TableHead>
+                  <TableHead className="text-right">Balance</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {result.rows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                      Enter a loan amount, rate and term above to generate a schedule.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  result.rows.map((row) => {
+                    const rowDate = startDate
+                      ? addMonths(startDate, row.month)
+                      : null
+                    // Year band: even calendar years get a subtle background,
+                    // odd ones stay clear. Falls back to month/12 if no start date.
+                    const year = rowDate
+                      ? rowDate.getFullYear()
+                      : Math.ceil(row.month / 12)
+                    const evenYear = year % 2 === 0
+                    const hasManual = Object.prototype.hasOwnProperty.call(
+                      manualCovers,
+                      row.month
+                    )
+                    const manualValue = hasManual ? manualCovers[row.month] : null
+                    const autoValue = autoCoverFor(row.month)
+                    return (
+                    <TableRow
+                      key={row.month}
+                      className={cn(evenYear ? "bg-muted/40" : "")}
+                    >
+                      <TableCell className="font-mono text-xs text-muted-foreground">
+                        {row.month}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
+                        {rowDate ? formatDate(rowDate) : "—"}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {currencyFmt(row.payment)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {currencyFmt(row.interest)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {currencyFmt(row.principal)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Input
+                          type="number"
+                          inputMode="decimal"
+                          min={0}
+                          step={100}
+                          value={manualValue ?? ""}
+                          onChange={(e) =>
+                            setCoverFor(row.month, e.target.value)
+                          }
+                          className={cn(
+                            "h-8 w-32 ml-auto text-right tabular-nums",
+                            // Subtle highlight when this month has a manual override.
+                            hasManual && "border-primary/60 bg-background",
+                            // Highlight when an auto cover will fire here (and no manual override).
+                            !hasManual && autoValue > 0 && "border-dashed"
+                          )}
+                          placeholder={autoValue > 0 ? String(autoValue) : "0"}
+                          title={
+                            hasManual
+                              ? manualValue === 0
+                                ? "Manual override: skip this month"
+                                : "Manual override"
+                              : autoValue > 0
+                                ? `Auto: ${autoValue} every ${autoEvery} months`
+                                : ""
+                          }
+                        />
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {row.commission > 0 ? currencyFmt(row.commission) : "—"}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {row.effectivePrincipalReduction > 0
+                          ? currencyFmt(row.effectivePrincipalReduction)
+                          : "—"}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums font-medium">
+                        {currencyFmt(row.totalOutOfPocket)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {currencyFmt(row.balance)}
+                      </TableCell>
+                    </TableRow>
+                    )
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function SummaryStat({
+  label,
+  value,
+  hint,
+}: {
+  label: string
+  value: string
+  hint?: string
+}) {
+  return (
+    <Card>
+      <CardContent className="pt-6">
+        <div className="text-sm text-muted-foreground">{label}</div>
+        <div className="text-2xl font-semibold tabular-nums mt-1">{value}</div>
+        {hint && (
+          <div className="text-xs text-muted-foreground mt-1">{hint}</div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
