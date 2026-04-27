@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -34,6 +34,8 @@ import {
   type PrepaymentMode,
 } from "@/lib/mortgage"
 
+import { loadPersisted, savePersisted } from "@/lib/persistence"
+
 import { cn } from "@/lib/utils"
 
 function todayISO(): string {
@@ -52,24 +54,60 @@ function toNumber(value: string): number {
 }
 
 export function MortgageCalculator() {
+  // Read the previously persisted session ONCE, at mount.
+  const initial = useMemo(() => loadPersisted(), [])
+
   // --- Loan inputs (kept as strings for clean editing UX) ---
-  const [amountStr, setAmountStr] = useState("100000")
-  const [rateStr, setRateStr] = useState("5.5")
-  const [yearsStr, setYearsStr] = useState("25")
-  const [commissionStr, setCommissionStr] = useState("1") // percent
-  const [currency, setCurrency] = useState("EUR")
-  const [mode, setMode] = useState<PrepaymentMode>("shorten")
-  const [startDateStr, setStartDateStr] = useState<string>(todayISO())
+  const [amountStr, setAmountStr] = useState(initial.amountStr ?? "100000")
+  const [rateStr, setRateStr] = useState(initial.rateStr ?? "5.5")
+  const [yearsStr, setYearsStr] = useState(initial.yearsStr ?? "25")
+  const [commissionStr, setCommissionStr] = useState(
+    initial.commissionStr ?? "1"
+  ) // percent
+  const [currency, setCurrency] = useState(initial.currency ?? "EUR")
+  const [mode, setMode] = useState<PrepaymentMode>(initial.mode ?? "shorten")
+  const [startDateStr, setStartDateStr] = useState<string>(
+    initial.startDateStr ?? todayISO()
+  )
 
   // --- Recurring "auto" cover: amount applied every N months. ---
-  const [autoAmountStr, setAutoAmountStr] = useState("0")
-  const [autoEveryStr, setAutoEveryStr] = useState("12")
+  const [autoAmountStr, setAutoAmountStr] = useState(initial.autoAmountStr ?? "0")
+  const [autoEveryStr, setAutoEveryStr] = useState(initial.autoEveryStr ?? "12")
 
   // Manual covers: month -> amount. A manual entry (even 0) ALWAYS wins over
   // the auto schedule for that month, so you can skip a single auto cover by
   // typing 0, or override a single auto with a different amount. Clearing the
   // input removes the manual override and lets auto kick back in.
-  const [manualCovers, setManualCovers] = useState<Record<number, number>>({})
+  const [manualCovers, setManualCovers] = useState<Record<number, number>>(
+    initial.manualCovers ?? {}
+  )
+
+  // Persist the entire session whenever any user-controlled field changes.
+  useEffect(() => {
+    savePersisted({
+      amountStr,
+      rateStr,
+      yearsStr,
+      commissionStr,
+      currency,
+      mode,
+      startDateStr,
+      autoAmountStr,
+      autoEveryStr,
+      manualCovers,
+    })
+  }, [
+    amountStr,
+    rateStr,
+    yearsStr,
+    commissionStr,
+    currency,
+    mode,
+    startDateStr,
+    autoAmountStr,
+    autoEveryStr,
+    manualCovers,
+  ])
 
   // Parsed inputs.
   const amount = toNumber(amountStr)
@@ -154,7 +192,7 @@ export function MortgageCalculator() {
   const currencyFmt = (n: number) => formatCurrency(n, currency)
 
   return (
-    <div className="container py-8 max-w-6xl">
+    <div className="container py-8 max-w-7xl">
       <header className="mb-8">
         <h1 className="text-3xl font-semibold tracking-tight">
           Credit Calculator
@@ -387,22 +425,21 @@ export function MortgageCalculator() {
         </CardHeader>
         <CardContent>
           <Separator className="mb-4" />
-          <div className="max-h-[600px] overflow-auto rounded-md border">
-            <Table>
-              <TableHeader className="sticky top-0 bg-background z-10">
-                <TableRow>
-                  <TableHead className="w-12">#</TableHead>
-                  <TableHead className="w-32">Date</TableHead>
-                  <TableHead className="text-right">Payment</TableHead>
-                  <TableHead className="text-right">Interest</TableHead>
-                  <TableHead className="text-right">Principal</TableHead>
-                  <TableHead className="text-right">Cover</TableHead>
-                  <TableHead className="text-right">Commission</TableHead>
-                  <TableHead className="text-right">
+          <Table wrapperClassName="max-h-[600px] rounded-md border">
+            <TableHeader className="sticky top-0 z-10 bg-background shadow-[inset_0_-1px_0_hsl(var(--border))]">
+              <TableRow className="hover:bg-background">
+                  <TableHead className="whitespace-nowrap w-12">#</TableHead>
+                  <TableHead className="whitespace-nowrap w-32">Date</TableHead>
+                  <TableHead className="whitespace-nowrap text-right">Payment</TableHead>
+                  <TableHead className="whitespace-nowrap text-right">Interest</TableHead>
+                  <TableHead className="whitespace-nowrap text-right">Principal</TableHead>
+                  <TableHead className="whitespace-nowrap text-right">Cover</TableHead>
+                  <TableHead className="whitespace-nowrap text-right">Commission</TableHead>
+                  <TableHead className="whitespace-nowrap text-right">
                     Reduces principal by
                   </TableHead>
-                  <TableHead className="text-right">Out of pocket</TableHead>
-                  <TableHead className="text-right">Balance</TableHead>
+                  <TableHead className="whitespace-nowrap text-right">Out of pocket</TableHead>
+                  <TableHead className="whitespace-nowrap text-right">Balance</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -460,7 +497,7 @@ export function MortgageCalculator() {
                             setCoverFor(row.month, e.target.value)
                           }
                           className={cn(
-                            "h-8 w-32 ml-auto text-right tabular-nums",
+                            "h-8 w-24 ml-auto text-right tabular-nums",
                             // Subtle highlight when this month has a manual override.
                             hasManual && "border-primary/60 bg-background",
                             // Highlight when an auto cover will fire here (and no manual override).
@@ -498,7 +535,6 @@ export function MortgageCalculator() {
                 )}
               </TableBody>
             </Table>
-          </div>
         </CardContent>
       </Card>
     </div>

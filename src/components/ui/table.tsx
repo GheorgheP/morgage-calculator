@@ -2,9 +2,18 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
-const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement>>(
-  ({ className, ...props }, ref) => (
-    <div className="relative w-full overflow-auto">
+interface TableProps extends React.HTMLAttributes<HTMLTableElement> {
+  /**
+   * Class names applied to the scroll wrapper around the <table>. Pass
+   * `max-h-...` here (rather than to a parent div) so the sticky thead
+   * resolves against this wrapper.
+   */
+  wrapperClassName?: string
+}
+
+const Table = React.forwardRef<HTMLTableElement, TableProps>(
+  ({ className, wrapperClassName, ...props }, ref) => (
+    <div className={cn("relative w-full overflow-auto", wrapperClassName)}>
       <table
         ref={ref}
         className={cn("w-full caption-bottom text-sm", className)}

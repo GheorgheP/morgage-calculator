@@ -9,6 +9,10 @@ import {
   parseISODate,
   mergeCovers,
 } from "../src/lib/mortgage.ts"
+import {
+  parsePersisted,
+  serializePersisted,
+} from "../src/lib/persistence.ts"
 
 let failures = 0
 function approx(a, b, eps = 0.5, label = "") {
@@ -245,6 +249,81 @@ function approx(a, b, eps = 0.5, label = "") {
     console.error(`FAIL commission ratio: got ${ratio}`)
   } else {
     console.log(`ok   commissions are exactly 1% of total covers`)
+  }
+}
+
+// --- Test 12: persistence round-trip ---
+{
+  const state = {
+    amountStr: "120000",
+    rateStr: "4.25",
+    yearsStr: "30",
+    commissionStr: "0.5",
+    currency: "USD",
+    mode: "lower",
+    startDateStr: "2026-04-26",
+    autoAmountStr: "1500",
+    autoEveryStr: "6",
+    manualCovers: { 12: 5000, 24: 0, 36: 7500 },
+  }
+  const raw = serializePersisted(state)
+  const back = parsePersisted(raw)
+  // Sort-keyed compare so we don't trip over object property ordering.
+  const norm = (o) => JSON.stringify(o, Object.keys(o).sort())
+  if (norm(back) !== norm(state)) {
+    failures++
+    console.error(`FAIL persistence round-trip\n  before: ${norm(state)}\n  after:  ${norm(back)}`)
+  } else {
+    console.log(`ok   persistence round-trip preserves all fields`)
+  }
+}
+
+// --- Test 13: parsePersisted is defensive against garbage ---
+{
+  const cases = [
+    { raw: null, label: "null" },
+    { raw: "", label: "empty string" },
+    { raw: "not json", label: "non-JSON" },
+    { raw: "null", label: "JSON null" },
+    { raw: "42", label: "JSON primitive" },
+    { raw: '{"mode":"crazy"}', label: "invalid mode" },
+    { raw: '{"amountStr":42}', label: "wrong type for amountStr" },
+    { raw: '{"manualCovers":"oops"}', label: "wrong type for manualCovers" },
+    { raw: '{"manualCovers":{"abc":100,"-2":50,"3":"not a number","4.5":99,"7":200}}', label: "manualCovers with bad keys/values" },
+  ]
+  for (const { raw, label } of cases) {
+    let result
+    try {
+      result = parsePersisted(raw)
+    } catch (err) {
+      failures++
+      console.error(`FAIL parsePersisted threw on ${label}: ${err}`)
+      continue
+    }
+    if (typeof result !== "object" || result === null) {
+      failures++
+      console.error(`FAIL parsePersisted didn't return an object for ${label}`)
+      continue
+    }
+    if (label === "invalid mode" && "mode" in result) {
+      failures++
+      console.error(`FAIL invalid mode should be dropped, got ${result.mode}`)
+      continue
+    }
+    if (label === "wrong type for amountStr" && "amountStr" in result) {
+      failures++
+      console.error(`FAIL non-string amountStr should be dropped`)
+      continue
+    }
+    if (label === "manualCovers with bad keys/values") {
+      const expected = { 7: 200 }
+      if (JSON.stringify(result.manualCovers) !== JSON.stringify(expected)) {
+        failures++
+        console.error(`FAIL manualCovers should keep only valid entries, got ${JSON.stringify(result.manualCovers)}`)
+        continue
+      }
+    }
+    console.log(`ok   parsePersisted handles ${label}`)
   }
 }
 
