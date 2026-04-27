@@ -18,6 +18,7 @@ export interface PersistedState {
   startDateStr: string
   autoAmountStr: string
   autoEveryStr: string
+  autoTopUp: boolean
   manualCovers: Record<number, number>
 }
 
@@ -59,6 +60,10 @@ export function parsePersisted(raw: string | null): Partial<PersistedState> {
 
   if (obj.mode === "shorten" || obj.mode === "lower") {
     out.mode = obj.mode
+  }
+
+  if (typeof obj.autoTopUp === "boolean") {
+    out.autoTopUp = obj.autoTopUp
   }
 
   if (obj.manualCovers && typeof obj.manualCovers === "object") {

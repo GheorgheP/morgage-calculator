@@ -29,7 +29,6 @@ import {
   formatCurrency,
   formatDate,
   generateSchedule,
-  mergeCovers,
   parseISODate,
   type PrepaymentMode,
 } from "@/lib/mortgage"
@@ -73,6 +72,9 @@ export function MortgageCalculator() {
   // --- Recurring "auto" cover: amount applied every N months. ---
   const [autoAmountStr, setAutoAmountStr] = useState(initial.autoAmountStr ?? "0")
   const [autoEveryStr, setAutoEveryStr] = useState(initial.autoEveryStr ?? "12")
+  // When on (and in "lower" mode), each auto cover also adds the savings
+  // between the original installment and the current (reduced) installment.
+  const [autoTopUp, setAutoTopUp] = useState<boolean>(initial.autoTopUp ?? false)
 
   // Manual covers: month -> amount. A manual entry (even 0) ALWAYS wins over
   // the auto schedule for that month, so you can skip a single auto cover by
@@ -94,6 +96,7 @@ export function MortgageCalculator() {
       startDateStr,
       autoAmountStr,
       autoEveryStr,
+      autoTopUp,
       manualCovers,
     })
   }, [
@@ -106,6 +109,7 @@ export function MortgageCalculator() {
     startDateStr,
     autoAmountStr,
     autoEveryStr,
+    autoTopUp,
     manualCovers,
   ])
 
@@ -118,33 +122,37 @@ export function MortgageCalculator() {
   const autoEvery = Math.max(0, Math.floor(toNumber(autoEveryStr)))
   const autoEnabled = autoAmount > 0 && autoEvery > 0
 
-  /** What the auto schedule would put in `month`, ignoring manual overrides. */
+  // Top-up only makes sense in "lower" mode; "shorten" keeps payment fixed.
+  const topUpActive = autoTopUp && mode === "lower"
+
+  /** What the auto schedule would put in `month`, ignoring manual overrides
+   *  and ignoring the dynamic top-up (used for tooltip / static display). */
   function autoCoverFor(month: number): number {
     if (!autoEnabled) return 0
     return month % autoEvery === 0 ? autoAmount : 0
   }
-
-  // Merge manual + auto into a single map for the schedule generator.
-  const effectiveCovers = useMemo(
-    () =>
-      mergeCovers(
-        manualCovers,
-        { amount: autoAmount, every: autoEvery },
-        termYears * 12
-      ),
-    [manualCovers, autoAmount, autoEvery, termYears]
-  )
 
   // Recompute the schedule on every relevant change.
   const result = useMemo(
     () =>
       generateSchedule(
         { amount, annualRate, termYears },
-        effectiveCovers,
+        manualCovers,
+        { amount: autoAmount, every: autoEvery, topUpFromPayment: autoTopUp },
         mode,
         commissionRate
       ),
-    [amount, annualRate, termYears, effectiveCovers, mode, commissionRate]
+    [
+      amount,
+      annualRate,
+      termYears,
+      manualCovers,
+      autoAmount,
+      autoEvery,
+      autoTopUp,
+      mode,
+      commissionRate,
+    ]
   )
 
   const monthsSaved = result.monthsOriginal - result.monthsActual
@@ -161,6 +169,7 @@ export function MortgageCalculator() {
     const baseline = generateSchedule(
       { amount, annualRate, termYears },
       {},
+      { amount: 0, every: 0 },
       mode,
       commissionRate
     )
@@ -364,6 +373,32 @@ export function MortgageCalculator() {
                     ? `Applies on month ${autoEvery}, ${autoEvery * 2}, ${autoEvery * 3}, …`
                     : "Set both fields above to enable."}
                 </p>
+                <Separator />
+                <div className="flex items-start gap-2">
+                  <input
+                    id="autoTopUp"
+                    type="checkbox"
+                    checked={autoTopUp}
+                    onChange={(e) => setAutoTopUp(e.target.checked)}
+                    disabled={mode !== "lower"}
+                    className="mt-1 h-4 w-4 rounded border-input accent-primary disabled:opacity-50"
+                  />
+                  <div className="grid gap-1">
+                    <Label
+                      htmlFor="autoTopUp"
+                      className={cn(
+                        mode !== "lower" && "text-muted-foreground"
+                      )}
+                    >
+                      Top up with payment savings
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      {mode === "lower"
+                        ? "Also add (initial payment − current payment) to each auto cover."
+                        : "Only available in “Lower payment” mode."}
+                    </p>
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -465,7 +500,15 @@ export function MortgageCalculator() {
                       row.month
                     )
                     const manualValue = hasManual ? manualCovers[row.month] : null
-                    const autoValue = autoCoverFor(row.month)
+                    // Static auto amount (without top-up) — for tooltips.
+                    const baseAutoValue = autoCoverFor(row.month)
+                    // Effective auto amount for this row, including any top-up.
+                    // When no manual override, row.cover IS the auto amount.
+                    const effectiveAutoValue = !hasManual ? row.cover : baseAutoValue
+                    const topUpDelta =
+                      topUpActive && baseAutoValue > 0 && !hasManual
+                        ? Math.max(0, effectiveAutoValue - baseAutoValue)
+                        : 0
                     return (
                     <TableRow
                       key={row.month}
@@ -501,16 +544,22 @@ export function MortgageCalculator() {
                             // Subtle highlight when this month has a manual override.
                             hasManual && "border-primary/60 bg-background",
                             // Highlight when an auto cover will fire here (and no manual override).
-                            !hasManual && autoValue > 0 && "border-dashed"
+                            !hasManual && baseAutoValue > 0 && "border-dashed"
                           )}
-                          placeholder={autoValue > 0 ? String(autoValue) : "0"}
+                          placeholder={
+                            effectiveAutoValue > 0
+                              ? String(effectiveAutoValue)
+                              : "0"
+                          }
                           title={
                             hasManual
                               ? manualValue === 0
                                 ? "Manual override: skip this month"
                                 : "Manual override"
-                              : autoValue > 0
-                                ? `Auto: ${autoValue} every ${autoEvery} months`
+                              : baseAutoValue > 0
+                                ? topUpDelta > 0
+                                  ? `Auto: ${baseAutoValue} + top-up ${topUpDelta} every ${autoEvery} months`
+                                  : `Auto: ${baseAutoValue} every ${autoEvery} months`
                                 : ""
                           }
                         />

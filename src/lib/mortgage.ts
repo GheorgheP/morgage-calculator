@@ -80,7 +80,8 @@ export function calculateMonthlyPayment(
 
 export function generateSchedule(
   inputs: LoanInputs,
-  covers: Record<number, number>,
+  manualCovers: Record<number, number>,
+  auto: AutoCoverConfig,
   mode: PrepaymentMode,
   commissionRate: number = 0.01
 ): ScheduleResult {
@@ -120,6 +121,8 @@ export function generateSchedule(
   let totalCommissions = 0
   let totalOutOfPocket = 0
 
+  const autoActive = auto.amount > 0 && auto.every > 0
+
   // Safety cap: in pathological inputs the loop could otherwise run forever.
   const safetyMax = monthsOriginal + 1200
 
@@ -136,8 +139,21 @@ export function generateSchedule(
 
     balance -= principalPart
 
-    // Apply cover (prepayment) for this month, if any.
-    const coverAmount = Math.max(0, covers[month] || 0)
+    // Resolve the cover for this month. Manual entry (including 0 = skip)
+    // always wins; otherwise the auto schedule fires on its period. When
+    // auto.topUpFromPayment is on AND mode is "lower", we also add the
+    // savings between the original installment and the (now reduced)
+    // current installment, recycling those savings back into principal.
+    let coverAmount = 0
+    if (Object.prototype.hasOwnProperty.call(manualCovers, month)) {
+      coverAmount = Math.max(0, manualCovers[month] || 0)
+    } else if (autoActive && month % auto.every === 0) {
+      coverAmount = auto.amount
+      if (auto.topUpFromPayment && mode === "lower") {
+        const diff = baseMonthlyPayment - payment
+        if (diff > 0) coverAmount += Math.ceil(diff)
+      }
+    }
     const commission = coverAmount * commissionRate
     const grossEffectiveReduction = coverAmount - commission
     let effectiveReduction = 0
@@ -263,35 +279,10 @@ export interface AutoCoverConfig {
   amount: number
   /** Period in months (e.g. 12 = annually). <= 0 disables. */
   every: number
-}
-
-/**
- * Merge manual per-month covers with a recurring auto cover into a single
- * `month -> amount` map suitable for `generateSchedule`.
- *
- * Rules:
- *   - A manual entry for a given month ALWAYS wins over the auto schedule.
- *   - Manual `0` is a real value: it explicitly skips that month, even if
- *     the auto schedule would otherwise fire.
- *   - Months not present in `manualCovers` use the auto amount whenever
- *     `month % auto.every === 0` and both auto fields are positive.
- *   - Month 0 is never included; iteration starts at month 1.
- */
-export function mergeCovers(
-  manualCovers: Record<number, number>,
-  auto: AutoCoverConfig,
-  totalMonths: number
-): Record<number, number> {
-  const out: Record<number, number> = {}
-  const autoActive = auto.amount > 0 && auto.every > 0
-  for (let m = 1; m <= totalMonths; m++) {
-    if (Object.prototype.hasOwnProperty.call(manualCovers, m)) {
-      const v = manualCovers[m]
-      if (v > 0) out[m] = v
-      // else: explicit manual 0 means "skip this month".
-    } else if (autoActive && m % auto.every === 0) {
-      out[m] = auto.amount
-    }
-  }
-  return out
+  /**
+   * When true AND mode is "lower", each auto cover is increased by
+   * (basePayment - currentPayment) — recycling the savings from a reduced
+   * installment back into principal.
+   */
+  topUpFromPayment?: boolean
 }
