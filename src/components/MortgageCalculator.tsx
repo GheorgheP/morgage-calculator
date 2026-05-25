@@ -45,10 +45,23 @@ function todayISO(): string {
   return `${yyyy}-${mm}-${dd}`
 }
 
+// Normalize a user-typed decimal string into a JS-parseable form. iOS numeric
+// keyboards emit "," as the decimal separator in many locales, so we accept it,
+// strip any non-numeric characters, and keep only the first separator.
+function normalizeDecimal(value: string): string {
+  const cleaned = value.replace(/[^\d.,]/g, "").replace(/,/g, ".")
+  const firstDot = cleaned.indexOf(".")
+  if (firstDot === -1) return cleaned
+  return (
+    cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, "")
+  )
+}
+
 // Convert a string into a non-negative finite number, or 0 if invalid/empty.
 function toNumber(value: string): number {
-  if (value.trim() === "") return 0
-  const n = Number(value)
+  const normalized = value.replace(",", ".")
+  if (normalized.trim() === "") return 0
+  const n = Number(normalized)
   return Number.isFinite(n) && n >= 0 ? n : 0
 }
 
@@ -83,6 +96,10 @@ export function MortgageCalculator() {
   const [manualCovers, setManualCovers] = useState<Record<number, number>>(
     initial.manualCovers ?? {}
   )
+
+  // In-progress text for cover inputs, so intermediate values like "5." or
+  // "5," (iOS comma) aren't snapped back to a number mid-edit.
+  const [coverDrafts, setCoverDrafts] = useState<Record<number, string>>({})
 
   // Persist the entire session whenever any user-controlled field changes.
   useEffect(() => {
@@ -179,15 +196,17 @@ export function MortgageCalculator() {
   const interestSaved = Math.max(0, baselineTotal - result.totalPaid)
 
   function setCoverFor(month: number, raw: string) {
+    const value = normalizeDecimal(raw)
+    setCoverDrafts((prev) => ({ ...prev, [month]: value }))
     setManualCovers((prev) => {
       const next = { ...prev }
-      if (raw.trim() === "") {
+      if (value.trim() === "") {
         // Empty input = remove manual override; auto (if any) takes over.
         delete next[month]
       } else {
         // Any parseable number (including 0) becomes a manual override.
         // Manual 0 explicitly skips the month (overrides any auto cover).
-        const n = Number(raw)
+        const n = Number(value)
         next[month] = Number.isFinite(n) && n >= 0 ? n : 0
       }
       return next
@@ -196,6 +215,7 @@ export function MortgageCalculator() {
 
   function clearManualCovers() {
     setManualCovers({})
+    setCoverDrafts({})
   }
 
   const currencyFmt = (n: number) => formatCurrency(n, currency)
@@ -225,24 +245,20 @@ export function MortgageCalculator() {
                 <Label htmlFor="amount">Loan amount</Label>
                 <Input
                   id="amount"
-                  type="number"
+                  type="text"
                   inputMode="decimal"
-                  min={0}
-                  step={1000}
                   value={amountStr}
-                  onChange={(e) => setAmountStr(e.target.value)}
+                  onChange={(e) => setAmountStr(normalizeDecimal(e.target.value))}
                 />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="rate">Annual interest rate (%)</Label>
                 <Input
                   id="rate"
-                  type="number"
+                  type="text"
                   inputMode="decimal"
-                  min={0}
-                  step={0.05}
                   value={rateStr}
-                  onChange={(e) => setRateStr(e.target.value)}
+                  onChange={(e) => setRateStr(normalizeDecimal(e.target.value))}
                 />
               </div>
               <div className="grid gap-2">
@@ -273,12 +289,12 @@ export function MortgageCalculator() {
                 </Label>
                 <Input
                   id="commission"
-                  type="number"
+                  type="text"
                   inputMode="decimal"
-                  min={0}
-                  step={0.1}
                   value={commissionStr}
-                  onChange={(e) => setCommissionStr(e.target.value)}
+                  onChange={(e) =>
+                    setCommissionStr(normalizeDecimal(e.target.value))
+                  }
                 />
               </div>
               <div className="grid gap-2">
@@ -346,12 +362,12 @@ export function MortgageCalculator() {
                   <Label htmlFor="autoAmount">Amount</Label>
                   <Input
                     id="autoAmount"
-                    type="number"
+                    type="text"
                     inputMode="decimal"
-                    min={0}
-                    step={100}
                     value={autoAmountStr}
-                    onChange={(e) => setAutoAmountStr(e.target.value)}
+                    onChange={(e) =>
+                      setAutoAmountStr(normalizeDecimal(e.target.value))
+                    }
                     placeholder="0"
                   />
                 </div>
@@ -531,11 +547,12 @@ export function MortgageCalculator() {
                       </TableCell>
                       <TableCell className="text-right">
                         <Input
-                          type="number"
+                          type="text"
                           inputMode="decimal"
-                          min={0}
-                          step={100}
-                          value={manualValue ?? ""}
+                          value={
+                            coverDrafts[row.month] ??
+                            (manualValue !== null ? String(manualValue) : "")
+                          }
                           onChange={(e) =>
                             setCoverFor(row.month, e.target.value)
                           }
