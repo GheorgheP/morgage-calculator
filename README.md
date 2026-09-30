@@ -40,11 +40,18 @@ last session is persisted in `localStorage`.
 
 ## What it does
 
-Enter **loan amount**, **annual interest rate**, **term in years**, and a
-**start date** — the app generates the full annuity schedule with monthly
+Enter **property price**, **down payment**, **annual interest rate**, **term
+in years**, and a **start date** — the app generates the full annuity schedule with monthly
 compounding. The first installment falls one calendar month after the start
 date (standard mortgage convention), with end-of-month overflow handled
 correctly (Jan 31 + 1 month → Feb 28/29).
+
+The **down payment** can be entered as an amount or as a percent of the
+price (toggle next to the field). The other form is previewed underneath
+(`20%` → `= €40,000.00`, `50,000` → `= 25.00% of price`), and switching the
+toggle converts the value so the down payment stays the same. The loan that
+the schedule runs on is price − down payment, shown under both fields. A down
+payment above the price (or 100%) is capped and flagged.
 
 Amounts accept thousands separators and either decimal mark: `100,000`,
 `1.000.000`, `250,000.50`, `250.000,50` and `150 000` all parse as expected,

@@ -4,12 +4,15 @@
 // `PersistedState` ever changes incompatibly, bump the version — older data
 // will simply be ignored, and the calculator will fall back to defaults.
 
-import type { PrepaymentMode } from "@/lib/mortgage"
+import type { DownPaymentUnit, PrepaymentMode } from "@/lib/mortgage"
 
 export const STORAGE_KEY = "credit-calculator:v1"
 
 export interface PersistedState {
+  /** Property price (was the loan amount before down payment existed). */
   amountStr: string
+  downPaymentStr: string
+  downPaymentUnit: DownPaymentUnit
   rateStr: string
   yearsStr: string
   commissionStr: string
@@ -42,6 +45,7 @@ export function parsePersisted(raw: string | null): Partial<PersistedState> {
 
   const stringKeys: Array<keyof PersistedState> = [
     "amountStr",
+    "downPaymentStr",
     "rateStr",
     "yearsStr",
     "commissionStr",
@@ -60,6 +64,10 @@ export function parsePersisted(raw: string | null): Partial<PersistedState> {
 
   if (obj.mode === "shorten" || obj.mode === "lower") {
     out.mode = obj.mode
+  }
+
+  if (obj.downPaymentUnit === "amount" || obj.downPaymentUnit === "percent") {
+    out.downPaymentUnit = obj.downPaymentUnit
   }
 
   if (typeof obj.autoTopUp === "boolean") {

@@ -31,6 +31,8 @@ import {
   generateSchedule,
   netPrepaymentSaving,
   parseISODate,
+  resolveDownPayment,
+  type DownPaymentUnit,
   type PrepaymentMode,
 } from "@/lib/mortgage"
 
@@ -58,7 +60,15 @@ export function MortgageCalculator() {
   const initial = useMemo(() => loadPersisted(), [])
 
   // --- Loan inputs (kept as strings for clean editing UX) ---
+  // Property price. Stored as `amountStr` so sessions saved before down
+  // payment existed load unchanged (down payment 0 => loan = price).
   const [amountStr, setAmountStr] = useState(initial.amountStr ?? "100000")
+  const [downPaymentStr, setDownPaymentStr] = useState(
+    initial.downPaymentStr ?? "0"
+  )
+  const [downPaymentUnit, setDownPaymentUnit] = useState<DownPaymentUnit>(
+    initial.downPaymentUnit ?? "percent"
+  )
   const [rateStr, setRateStr] = useState(initial.rateStr ?? "5.5")
   const [yearsStr, setYearsStr] = useState(initial.yearsStr ?? "25")
   const [commissionStr, setCommissionStr] = useState(
@@ -93,6 +103,8 @@ export function MortgageCalculator() {
   useEffect(() => {
     savePersisted({
       amountStr,
+      downPaymentStr,
+      downPaymentUnit,
       rateStr,
       yearsStr,
       commissionStr,
@@ -106,6 +118,8 @@ export function MortgageCalculator() {
     })
   }, [
     amountStr,
+    downPaymentStr,
+    downPaymentUnit,
     rateStr,
     yearsStr,
     commissionStr,
@@ -119,7 +133,16 @@ export function MortgageCalculator() {
   ])
 
   // Parsed inputs.
-  const amount = parseAmount(amountStr)
+  const price = parseAmount(amountStr)
+  const downPayment = resolveDownPayment(
+    price,
+    downPaymentUnit === "percent"
+      ? parseDecimal(downPaymentStr)
+      : parseAmount(downPaymentStr),
+    downPaymentUnit
+  )
+  // What is actually borrowed; everything below runs on this.
+  const amount = downPayment.loan
   const annualRate = parseDecimal(rateStr)
   const termYears = toInteger(yearsStr)
   const commissionRate = parseDecimal(commissionStr) / 100
@@ -201,6 +224,16 @@ export function MortgageCalculator() {
     })
   }
 
+  // Switching unit converts the value, so the down payment itself stays put.
+  function changeDownPaymentUnit(unit: DownPaymentUnit) {
+    if (unit === downPaymentUnit) return
+    if (downPaymentStr.trim() !== "") {
+      const v = unit === "percent" ? downPayment.percent : downPayment.amount
+      setDownPaymentStr(String(Math.round(v * 100) / 100))
+    }
+    setDownPaymentUnit(unit)
+  }
+
   function clearManualCovers() {
     setManualCovers({})
     setCoverDrafts({})
@@ -230,7 +263,7 @@ export function MortgageCalculator() {
           <CardContent>
             <div className="grid gap-4 md:grid-cols-2">
               <div className="grid gap-2">
-                <Label htmlFor="amount">Loan amount</Label>
+                <Label htmlFor="amount">Property price</Label>
                 <Input
                   id="amount"
                   type="text"
@@ -239,8 +272,70 @@ export function MortgageCalculator() {
                   onChange={(e) => setAmountStr(sanitizeNumericInput(e.target.value))}
                 />
                 <p className="text-xs text-muted-foreground tabular-nums">
-                  = {currencyFmt(amount)}
+                  = {currencyFmt(price)}
                 </p>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="downPayment">Down payment</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="downPayment"
+                    type="text"
+                    inputMode="decimal"
+                    value={downPaymentStr}
+                    onChange={(e) =>
+                      setDownPaymentStr(sanitizeNumericInput(e.target.value))
+                    }
+                    placeholder="0"
+                  />
+                  <ToggleGroup
+                    type="single"
+                    value={downPaymentUnit}
+                    onValueChange={(v) =>
+                      v && changeDownPaymentUnit(v as DownPaymentUnit)
+                    }
+                    variant="outline"
+                    aria-label="Down payment unit"
+                  >
+                    <ToggleGroupItem
+                      value="amount"
+                      className="px-3 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+                    >
+                      {currency || "Amt"}
+                    </ToggleGroupItem>
+                    <ToggleGroupItem
+                      value="percent"
+                      className="px-3 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+                    >
+                      %
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                </div>
+                <p
+                  className={cn(
+                    "text-xs tabular-nums",
+                    downPayment.capped ? "text-destructive" : "text-muted-foreground"
+                  )}
+                >
+                  {downPaymentUnit === "percent"
+                    ? `= ${currencyFmt(downPayment.amount)}`
+                    : `= ${downPayment.percent.toFixed(2)}% of price`}
+                  {downPayment.capped &&
+                    (downPaymentUnit === "percent"
+                      ? " (capped at 100%)"
+                      : " (capped at the price)")}
+                </p>
+              </div>
+              <div className="md:col-span-2 rounded-md border bg-muted/40 px-3 py-2 text-sm flex flex-wrap items-baseline justify-between gap-x-4">
+                <span className="text-muted-foreground">Loan amount</span>
+                <span className="tabular-nums font-medium">
+                  {currencyFmt(amount)}
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    {price > 0
+                      ? `${(100 - downPayment.percent).toFixed(2)}% of price`
+                      : ""}
+                  </span>
+                </span>
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="rate">Annual interest rate (%)</Label>
@@ -493,7 +588,7 @@ export function MortgageCalculator() {
                 {result.rows.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
-                      Enter a loan amount, rate and term above to generate a schedule.
+                      Enter a property price, rate and term above to generate a schedule.
                     </TableCell>
                   </TableRow>
                 ) : (
