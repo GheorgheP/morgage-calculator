@@ -8,6 +8,7 @@ import {
   addMonths,
   parseISODate,
   netPrepaymentSaving,
+  resolveDownPayment,
 } from "../src/lib/mortgage.ts"
 import { parseAmount, parseDecimal, sanitizeNumericInput } from "../src/lib/number.ts"
 import {
@@ -337,10 +338,43 @@ function approx(a, b, eps = 0.5, label = "") {
   check(sanitizeNumericInput("€100,000.50 EUR") === "100,000.50 ", "sanitize keeps digits and separators")
 }
 
+// --- Test 11f: down payment as amount or percent of price ---
+{
+  const pct = resolveDownPayment(200000, 20, "percent")
+  approx(pct.amount, 40000, 1e-9, "20% of 200k = 40k")
+  approx(pct.loan, 160000, 1e-9, "loan = price - down payment (percent)")
+  check(!pct.capped, "20% is not capped")
+
+  const amt = resolveDownPayment(200000, 50000, "amount")
+  approx(amt.percent, 25, 1e-9, "50k of 200k = 25%")
+  approx(amt.loan, 150000, 1e-9, "loan = price - down payment (amount)")
+
+  // Round trip: amount -> percent -> amount gives the same down payment.
+  const back = resolveDownPayment(200000, amt.percent, "percent")
+  approx(back.amount, 50000, 1e-9, "amount -> percent -> amount round trip")
+
+  const over = resolveDownPayment(200000, 250000, "amount")
+  check(over.capped && over.amount === 200000 && over.loan === 0, "amount above price is capped, loan 0")
+  const overPct = resolveDownPayment(200000, 120, "percent")
+  check(overPct.capped && overPct.percent === 100 && overPct.loan === 0, "percent above 100 is capped, loan 0")
+
+  const zero = resolveDownPayment(0, 5000, "amount")
+  check(zero.percent === 0 && zero.loan === 0, "zero price: 0%, no loan")
+
+  const none = resolveDownPayment(100000, 0, "percent")
+  check(none.loan === 100000, "no down payment: loan = price (old sessions unchanged)")
+
+  // Schedule runs on the loan, not the price.
+  const r = generateSchedule({ amount: pct.loan, annualRate: 5.5, termYears: 25 }, {}, NO_AUTO, "shorten")
+  approx(r.baseMonthlyPayment, calculateMonthlyPayment(160000, 5.5, 300), 1e-9, "installment based on the loan amount")
+}
+
 // --- Test 12: persistence round-trip ---
 {
   const state = {
     amountStr: "120000",
+    downPaymentStr: "15",
+    downPaymentUnit: "percent",
     rateStr: "4.25",
     yearsStr: "30",
     commissionStr: "0.5",
@@ -373,6 +407,7 @@ function approx(a, b, eps = 0.5, label = "") {
     { raw: "null", label: "JSON null" },
     { raw: "42", label: "JSON primitive" },
     { raw: '{"mode":"crazy"}', label: "invalid mode" },
+    { raw: '{"downPaymentUnit":"eur"}', label: "invalid down payment unit" },
     { raw: '{"amountStr":42}', label: "wrong type for amountStr" },
     { raw: '{"manualCovers":"oops"}', label: "wrong type for manualCovers" },
     { raw: '{"manualCovers":{"abc":100,"-2":50,"3":"not a number","4.5":99,"7":200}}', label: "manualCovers with bad keys/values" },
@@ -394,6 +429,11 @@ function approx(a, b, eps = 0.5, label = "") {
     if (label === "invalid mode" && "mode" in result) {
       failures++
       console.error(`FAIL invalid mode should be dropped, got ${result.mode}`)
+      continue
+    }
+    if (label === "invalid down payment unit" && "downPaymentUnit" in result) {
+      failures++
+      console.error(`FAIL invalid downPaymentUnit should be dropped, got ${result.downPaymentUnit}`)
       continue
     }
     if (label === "wrong type for amountStr" && "amountStr" in result) {

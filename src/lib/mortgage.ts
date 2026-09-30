@@ -319,3 +319,37 @@ export interface AutoCoverConfig {
    */
   topUpFromPayment?: boolean
 }
+
+export type DownPaymentUnit = "amount" | "percent"
+
+export interface DownPayment {
+  /** Down payment in currency units, clamped to [0, price]. */
+  amount: number
+  /** Down payment as a percent of the price, clamped to [0, 100]. */
+  percent: number
+  /** What has to be borrowed: price - down payment. */
+  loan: number
+  /** True when the entered value exceeded the price (or 100%) and was capped. */
+  capped: boolean
+}
+
+/**
+ * Resolve a down payment entered either as an amount or as a percent of the
+ * property price into both forms, plus the resulting loan amount.
+ */
+export function resolveDownPayment(
+  price: number,
+  value: number,
+  unit: DownPaymentUnit
+): DownPayment {
+  const p = Math.max(0, price)
+  const v = Math.max(0, value)
+  if (unit === "percent") {
+    const percent = Math.min(v, 100)
+    const amount = (p * percent) / 100
+    return { amount, percent, loan: p - amount, capped: v > 100 }
+  }
+  const amount = Math.min(v, p)
+  const percent = p > 0 ? (amount / p) * 100 : 0
+  return { amount, percent, loan: p - amount, capped: v > p }
+}
