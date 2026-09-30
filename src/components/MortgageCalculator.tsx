@@ -34,6 +34,7 @@ import {
   type PrepaymentMode,
 } from "@/lib/mortgage"
 
+import { parseAmount, parseDecimal, sanitizeNumericInput } from "@/lib/number"
 import { loadPersisted, savePersisted } from "@/lib/persistence"
 
 import { cn } from "@/lib/utils"
@@ -46,24 +47,10 @@ function todayISO(): string {
   return `${yyyy}-${mm}-${dd}`
 }
 
-// Normalize a user-typed decimal string into a JS-parseable form. iOS numeric
-// keyboards emit "," as the decimal separator in many locales, so we accept it,
-// strip any non-numeric characters, and keep only the first separator.
-function normalizeDecimal(value: string): string {
-  const cleaned = value.replace(/[^\d.,]/g, "").replace(/,/g, ".")
-  const firstDot = cleaned.indexOf(".")
-  if (firstDot === -1) return cleaned
-  return (
-    cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, "")
-  )
-}
-
-// Convert a string into a non-negative finite number, or 0 if invalid/empty.
-function toNumber(value: string): number {
-  const normalized = value.replace(",", ".")
-  if (normalized.trim() === "") return 0
-  const n = Number(normalized)
-  return Number.isFinite(n) && n >= 0 ? n : 0
+// Integer fields (term, period) come from <input type="number">.
+function toInteger(value: string): number {
+  const n = Math.floor(Number(value))
+  return Number.isFinite(n) && n > 0 ? n : 0
 }
 
 export function MortgageCalculator() {
@@ -132,12 +119,12 @@ export function MortgageCalculator() {
   ])
 
   // Parsed inputs.
-  const amount = toNumber(amountStr)
-  const annualRate = toNumber(rateStr)
-  const termYears = Math.max(0, Math.floor(toNumber(yearsStr)))
-  const commissionRate = Math.max(0, toNumber(commissionStr) / 100)
-  const autoAmount = toNumber(autoAmountStr)
-  const autoEvery = Math.max(0, Math.floor(toNumber(autoEveryStr)))
+  const amount = parseAmount(amountStr)
+  const annualRate = parseDecimal(rateStr)
+  const termYears = toInteger(yearsStr)
+  const commissionRate = parseDecimal(commissionStr) / 100
+  const autoAmount = parseAmount(autoAmountStr)
+  const autoEvery = toInteger(autoEveryStr)
   const autoEnabled = autoAmount > 0 && autoEvery > 0
 
   // Top-up only makes sense in "lower" mode; "shorten" keeps payment fixed.
@@ -198,7 +185,7 @@ export function MortgageCalculator() {
   const netSaving = netPrepaymentSaving(baseline, result)
 
   function setCoverFor(month: number, raw: string) {
-    const value = normalizeDecimal(raw)
+    const value = sanitizeNumericInput(raw)
     setCoverDrafts((prev) => ({ ...prev, [month]: value }))
     setManualCovers((prev) => {
       const next = { ...prev }
@@ -208,8 +195,7 @@ export function MortgageCalculator() {
       } else {
         // Any parseable number (including 0) becomes a manual override.
         // Manual 0 explicitly skips the month (overrides any auto cover).
-        const n = Number(value)
-        next[month] = Number.isFinite(n) && n >= 0 ? n : 0
+        next[month] = parseAmount(value)
       }
       return next
     })
@@ -250,8 +236,11 @@ export function MortgageCalculator() {
                   type="text"
                   inputMode="decimal"
                   value={amountStr}
-                  onChange={(e) => setAmountStr(normalizeDecimal(e.target.value))}
+                  onChange={(e) => setAmountStr(sanitizeNumericInput(e.target.value))}
                 />
+                <p className="text-xs text-muted-foreground tabular-nums">
+                  = {currencyFmt(amount)}
+                </p>
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="rate">Annual interest rate (%)</Label>
@@ -260,7 +249,7 @@ export function MortgageCalculator() {
                   type="text"
                   inputMode="decimal"
                   value={rateStr}
-                  onChange={(e) => setRateStr(normalizeDecimal(e.target.value))}
+                  onChange={(e) => setRateStr(sanitizeNumericInput(e.target.value))}
                 />
               </div>
               <div className="grid gap-2">
@@ -295,7 +284,7 @@ export function MortgageCalculator() {
                   inputMode="decimal"
                   value={commissionStr}
                   onChange={(e) =>
-                    setCommissionStr(normalizeDecimal(e.target.value))
+                    setCommissionStr(sanitizeNumericInput(e.target.value))
                   }
                 />
               </div>
@@ -368,10 +357,15 @@ export function MortgageCalculator() {
                     inputMode="decimal"
                     value={autoAmountStr}
                     onChange={(e) =>
-                      setAutoAmountStr(normalizeDecimal(e.target.value))
+                      setAutoAmountStr(sanitizeNumericInput(e.target.value))
                     }
                     placeholder="0"
                   />
+                  {autoAmount > 0 && (
+                    <p className="text-xs text-muted-foreground tabular-nums">
+                      = {currencyFmt(autoAmount)}
+                    </p>
+                  )}
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="autoEvery">Every (months)</Label>
@@ -412,7 +406,7 @@ export function MortgageCalculator() {
                     </Label>
                     <p className="text-xs text-muted-foreground">
                       {mode === "lower"
-                        ? "Also add (initial payment − current payment) to each auto cover."
+                        ? "Also add the installment savings (initial − current payment) accumulated since the previous auto cover."
                         : "Only available in “Lower payment” mode."}
                     </p>
                   </div>

@@ -9,6 +9,7 @@ import {
   parseISODate,
   netPrepaymentSaving,
 } from "../src/lib/mortgage.ts"
+import { parseAmount, parseDecimal, sanitizeNumericInput } from "../src/lib/number.ts"
 import {
   parsePersisted,
   serializePersisted,
@@ -203,17 +204,31 @@ function approx(a, b, eps = 0.5, label = "") {
   check(Math.abs(r.totalCommissions / r.totalCovers - 0.01) < 1e-9, "commissions are exactly 1% of total covers")
 }
 
-// --- Test 11b: top-up in lower mode adds (base - current) payment ---
+// --- Test 11b (regression): top-up recycles ALL savings since last auto cover ---
+// Previously only one month's (base - current) was added, even though the
+// reduced installment saved that amount every month of the period.
 {
-  const r = generateSchedule(
-    LOAN,
-    {},
-    { amount: 5000, every: 12, topUpFromPayment: true },
-    "lower",
-    0.01
-  )
-  const expected = 5000 + Math.ceil(r.baseMonthlyPayment - r.rows[23].payment)
-  check(r.rows[23].cover === expected, `top-up at month 24: ${r.rows[23].cover} = ${expected}`)
+  const auto = { amount: 5000, every: 12, topUpFromPayment: true }
+  const r = generateSchedule(LOAN, {}, auto, "lower", 0.01)
+  const saved = (from, to) =>
+    r.rows.slice(from - 1, to).reduce((s, x) => s + (r.baseMonthlyPayment - x.payment), 0)
+  check(r.rows[11].cover === 5000, "month 12: nothing saved yet, cover = 5000")
+  const expected24 = 5000 + Math.ceil(saved(13, 24))
+  check(r.rows[23].cover === expected24, `month 24: top-up = 12 months of savings (${r.rows[23].cover} = ${expected24})`)
+  check(r.rows[23].cover - 5000 > 300, `month 24 top-up is ~12x one month (${r.rows[23].cover - 5000})`)
+  const expected36 = 5000 + Math.ceil(saved(25, 36))
+  check(r.rows[35].cover === expected36, `month 36: counter resets after each auto cover (${r.rows[35].cover} = ${expected36})`)
+
+  // A skipped auto month carries its savings into the next auto cover.
+  const skip = generateSchedule(LOAN, { 24: 0 }, auto, "lower", 0.01)
+  const saved2 = (from, to) =>
+    skip.rows.slice(from - 1, to).reduce((s, x) => s + (skip.baseMonthlyPayment - x.payment), 0)
+  const expectedSkip = 5000 + Math.ceil(saved2(13, 36))
+  check(skip.rows[35].cover === expectedSkip, `skipped month 24 carries savings to 36 (${skip.rows[35].cover} = ${expectedSkip})`)
+
+  // Top-up never applies in shorten mode.
+  const sh = generateSchedule(LOAN, {}, auto, "shorten", 0.01)
+  check(sh.rows.filter((x) => x.cover > 0).every((x) => x.cover === 5000 || x.month === sh.monthsActual), "shorten mode: no top-up")
 }
 
 // --- Test 11c (regression): savings = interest avoided - commissions ---
@@ -280,6 +295,46 @@ function approx(a, b, eps = 0.5, label = "") {
   // Zero commission: cover capped exactly at the balance.
   const z = generateSchedule(LOAN, { 299: 5000 }, NO_AUTO, "shorten", 0)
   approx(z.rows[298].cover, z.rows[298].effectivePrincipalReduction, 0.001, "0% commission: cover = balance")
+}
+
+// --- Test 11e (regression): number parsing with thousands separators ---
+// Previously every "," became a decimal point: "100,000" was read as 100.
+{
+  const amounts = [
+    ["100000", 100000],
+    ["100,000", 100000],
+    ["100.000", 100000],
+    ["1,000,000", 1000000],
+    ["1.000.000", 1000000],
+    ["250,000.50", 250000.5],
+    ["250.000,50", 250000.5],
+    ["150 000", 150000],
+    ["1'500'000", 1500000],
+    ["€ 1,500", 1500],
+    ["1500.5", 1500.5],
+    ["1500,5", 1500.5],
+    ["1234,56", 1234.56],
+    ["0,500", 0.5],
+    ["5,", 5],
+    ["5.", 5],
+    ["", 0],
+    ["abc", 0],
+  ]
+  for (const [raw, expected] of amounts) {
+    approx(parseAmount(raw), expected, 1e-9, `parseAmount(${JSON.stringify(raw)})`)
+  }
+  const rates = [
+    ["5.5", 5.5],
+    ["5,5", 5.5],
+    ["4,250", 4.25],
+    ["4.250", 4.25],
+    ["0,75", 0.75],
+    ["1.2.3", 1.23],
+  ]
+  for (const [raw, expected] of rates) {
+    approx(parseDecimal(raw), expected, 1e-9, `parseDecimal(${JSON.stringify(raw)})`)
+  }
+  check(sanitizeNumericInput("€100,000.50 EUR") === "100,000.50 ", "sanitize keeps digits and separators")
 }
 
 // --- Test 12: persistence round-trip ---

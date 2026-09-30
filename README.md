@@ -46,6 +46,13 @@ compounding. The first installment falls one calendar month after the start
 date (standard mortgage convention), with end-of-month overflow handled
 correctly (Jan 31 + 1 month → Feb 28/29).
 
+Amounts accept thousands separators and either decimal mark: `100,000`,
+`1.000.000`, `250,000.50`, `250.000,50` and `150 000` all parse as expected,
+and the parsed value is echoed under the field. With a single separator
+followed by exactly three digits (`1,500`), it is read as a thousands
+separator. Rates and commission always treat a single separator as the
+decimal mark (`4,250` = 4.25%).
+
 The schedule renders as a table with one row per installment:
 
 | # | Date | Payment | Interest | Principal | Cover | Commission | Reduces principal by | Out of pocket | Balance |
@@ -80,6 +87,11 @@ A recurring prepayment can be configured with an **amount** and a
 **period** (every N months). The auto schedule fires on month `N`, `2N`,
 `3N`, … and is shown in the cover column as a faded placeholder with a
 dashed border, so you can see at a glance which months will fire.
+
+In **Lower payment** mode, **Top up with payment savings** adds to each auto
+cover what the reduced installment saved you (initial − current installment)
+over every month since the previous auto cover. If an auto month is skipped
+or overridden manually, its savings carry over to the next auto cover.
 
 Manual entries always win:
 
