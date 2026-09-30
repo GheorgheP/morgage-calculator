@@ -22,7 +22,8 @@ node --experimental-strip-types scripts/sanity-check.mjs
 ```
 
 It exercises the annuity formula, the schedule generator, both prepayment
-modes, the auto/manual cover merge, the date helpers, and the localStorage
+modes, auto/manual cover resolution and top-up, the savings figure, cover
+capping at the remaining balance, the date helpers, and the localStorage
 persistence parser — including malformed-input cases.
 
 ## Stack
@@ -45,6 +46,13 @@ compounding. The first installment falls one calendar month after the start
 date (standard mortgage convention), with end-of-month overflow handled
 correctly (Jan 31 + 1 month → Feb 28/29).
 
+Amounts accept thousands separators and either decimal mark: `100,000`,
+`1.000.000`, `250,000.50`, `250.000,50` and `150 000` all parse as expected,
+and the parsed value is echoed under the field. With a single separator
+followed by exactly three digits (`1,500`), it is read as a thousands
+separator. Rates and commission always treat a single separator as the
+decimal mark (`4,250` = 4.25%).
+
 The schedule renders as a table with one row per installment:
 
 | # | Date | Payment | Interest | Principal | Cover | Commission | Reduces principal by | Out of pocket | Balance |
@@ -53,13 +61,18 @@ Rows are banded by calendar year — even years get a subtle background tint —
 and the column headers stay pinned at the top while you scroll.
 
 Four summary cards above the table track the initial monthly installment,
-total to pay, total interest, and the projected payoff date.
+total to pay, total interest, and the projected payoff date. The saving
+shown under total interest is the interest avoided versus the same loan
+without prepayments, minus the commissions paid.
 
 ### Prepayment ("cover")
 
 Every row has an editable **Cover** input. When you enter an amount, the
 bank's commission (default 1%, configurable) is deducted from it, and only
-the remainder reduces the outstanding principal. A global toggle controls
+the remainder reduces the outstanding principal. A cover larger than what it
+takes to clear the loan is capped at `balance / (1 − commission)`, so you are
+never charged for money that can't be applied (and a cover in the final
+installment month is ignored). A global toggle controls
 how the bank applies the prepayment:
 
 - **Shorten period** — keep the monthly installment fixed; the loan
@@ -74,6 +87,11 @@ A recurring prepayment can be configured with an **amount** and a
 **period** (every N months). The auto schedule fires on month `N`, `2N`,
 `3N`, … and is shown in the cover column as a faded placeholder with a
 dashed border, so you can see at a glance which months will fire.
+
+In **Lower payment** mode, **Top up with payment savings** adds to each auto
+cover what the reduced installment saved you (initial − current installment)
+over every month since the previous auto cover. If an auto month is skipped
+or overridden manually, its savings carry over to the next auto cover.
 
 Manual entries always win:
 

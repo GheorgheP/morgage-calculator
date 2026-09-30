@@ -30,7 +30,10 @@ export interface AmortizationRow {
   interest: number
   /** Principal portion of the regular installment. */
   principal: number
-  /** User-entered prepayment amount for this month (gross, before commission). */
+  /**
+   * Prepayment applied this month (gross, before commission). Capped at what
+   * it takes to clear the remaining balance, so it can be less than entered.
+   */
   cover: number
   /** Bank commission deducted from the cover amount. */
   commission: number
@@ -122,6 +125,10 @@ export function generateSchedule(
   let totalOutOfPocket = 0
 
   const autoActive = auto.amount > 0 && auto.every > 0
+  const topUpActive = autoActive && !!auto.topUpFromPayment && mode === "lower"
+  // Installment savings (base - current installment) accumulated since the
+  // last auto cover that recycled them.
+  let pendingSavings = 0
 
   // Safety cap: in pathological inputs the loop could otherwise run forever.
   const safetyMax = monthsOriginal + 1200
@@ -139,26 +146,36 @@ export function generateSchedule(
 
     balance -= principalPart
 
+    if (topUpActive) pendingSavings += Math.max(0, baseMonthlyPayment - payment)
+
     // Resolve the cover for this month. Manual entry (including 0 = skip)
     // always wins; otherwise the auto schedule fires on its period. When
-    // auto.topUpFromPayment is on AND mode is "lower", we also add the
-    // savings between the original installment and the (now reduced)
-    // current installment, recycling those savings back into principal.
+    // top-up is active, the auto cover also recycles every month's savings
+    // from the reduced installment since the last auto cover. Savings from a
+    // month whose auto cover was overridden or skipped carry over to the next.
     let coverAmount = 0
     if (Object.prototype.hasOwnProperty.call(manualCovers, month)) {
       coverAmount = Math.max(0, manualCovers[month] || 0)
     } else if (autoActive && month % auto.every === 0) {
       coverAmount = auto.amount
-      if (auto.topUpFromPayment && mode === "lower") {
-        const diff = baseMonthlyPayment - payment
-        if (diff > 0) coverAmount += Math.ceil(diff)
+      if (topUpActive && pendingSavings > 0) {
+        coverAmount += Math.ceil(pendingSavings)
+        pendingSavings = 0
       }
+    }
+    // Never take more cash than it costs to clear the loan: cap the gross
+    // cover at balance / (1 - commissionRate) so the net reduction equals the
+    // remaining balance. Nothing is left to prepay once the balance is gone.
+    if (balance <= EPSILON) {
+      coverAmount = 0
+    } else if (commissionRate < 1) {
+      coverAmount = Math.min(coverAmount, balance / (1 - commissionRate))
     }
     const commission = coverAmount * commissionRate
     const grossEffectiveReduction = coverAmount - commission
     let effectiveReduction = 0
 
-    if (grossEffectiveReduction > 0 && balance > EPSILON) {
+    if (grossEffectiveReduction > 0) {
       effectiveReduction = Math.min(grossEffectiveReduction, balance)
       balance -= effectiveReduction
 
@@ -207,6 +224,21 @@ export function generateSchedule(
     monthsActual: rows.length,
     monthsOriginal,
   }
+}
+
+/**
+ * Net saving of `result` versus the same loan without prepayments: interest
+ * avoided minus the commissions paid to get there. Can be negative when the
+ * commissions outweigh the interest saved.
+ *
+ * Do NOT compare installment totals (`totalPaid`): installments also shrink
+ * because principal was repaid through covers, which is not a saving.
+ */
+export function netPrepaymentSaving(
+  baseline: ScheduleResult,
+  result: ScheduleResult
+): number {
+  return baseline.totalInterest - result.totalInterest - result.totalCommissions
 }
 
 export function formatCurrency(
@@ -280,9 +312,10 @@ export interface AutoCoverConfig {
   /** Period in months (e.g. 12 = annually). <= 0 disables. */
   every: number
   /**
-   * When true AND mode is "lower", each auto cover is increased by
-   * (basePayment - currentPayment) — recycling the savings from a reduced
-   * installment back into principal.
+   * When true AND mode is "lower", each auto cover is increased by the sum
+   * of (basePayment - currentPayment) over every month since the previous
+   * auto cover — recycling the savings from a reduced installment back into
+   * principal.
    */
   topUpFromPayment?: boolean
 }
