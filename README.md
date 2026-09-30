@@ -22,7 +22,8 @@ node --experimental-strip-types scripts/sanity-check.mjs
 ```
 
 It exercises the annuity formula, the schedule generator, both prepayment
-modes, the auto/manual cover merge, the date helpers, and the localStorage
+modes, auto/manual cover resolution and top-up, the savings figure, cover
+capping at the remaining balance, the date helpers, and the localStorage
 persistence parser — including malformed-input cases.
 
 ## Stack
@@ -53,13 +54,18 @@ Rows are banded by calendar year — even years get a subtle background tint —
 and the column headers stay pinned at the top while you scroll.
 
 Four summary cards above the table track the initial monthly installment,
-total to pay, total interest, and the projected payoff date.
+total to pay, total interest, and the projected payoff date. The saving
+shown under total interest is the interest avoided versus the same loan
+without prepayments, minus the commissions paid.
 
 ### Prepayment ("cover")
 
 Every row has an editable **Cover** input. When you enter an amount, the
 bank's commission (default 1%, configurable) is deducted from it, and only
-the remainder reduces the outstanding principal. A global toggle controls
+the remainder reduces the outstanding principal. A cover larger than what it
+takes to clear the loan is capped at `balance / (1 − commission)`, so you are
+never charged for money that can't be applied (and a cover in the final
+installment month is ignored). A global toggle controls
 how the bank applies the prepayment:
 
 - **Shorten period** — keep the monthly installment fixed; the loan

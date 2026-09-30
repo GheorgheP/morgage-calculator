@@ -29,6 +29,7 @@ import {
   formatCurrency,
   formatDate,
   generateSchedule,
+  netPrepaymentSaving,
   parseISODate,
   type PrepaymentMode,
 } from "@/lib/mortgage"
@@ -181,19 +182,20 @@ export function MortgageCalculator() {
       ? addMonths(startDate, result.monthsActual)
       : null
 
-  // What you would pay in total if you never prepaid.
-  const baselineTotal = useMemo(() => {
-    const baseline = generateSchedule(
-      { amount, annualRate, termYears },
-      {},
-      { amount: 0, every: 0 },
-      mode,
-      commissionRate
-    )
-    return baseline.totalPaid
-  }, [amount, annualRate, termYears, mode, commissionRate])
+  // The same loan with no prepayments, to measure what the covers saved.
+  const baseline = useMemo(
+    () =>
+      generateSchedule(
+        { amount, annualRate, termYears },
+        {},
+        { amount: 0, every: 0 },
+        mode,
+        commissionRate
+      ),
+    [amount, annualRate, termYears, mode, commissionRate]
+  )
 
-  const interestSaved = Math.max(0, baselineTotal - result.totalPaid)
+  const netSaving = netPrepaymentSaving(baseline, result)
 
   function setCoverFor(month: number, raw: string) {
     const value = normalizeDecimal(raw)
@@ -436,8 +438,8 @@ export function MortgageCalculator() {
           label="Total interest"
           value={currencyFmt(result.totalInterest)}
           hint={
-            interestSaved > 0
-              ? `Saved vs no prepay: ${currencyFmt(interestSaved)}`
+            result.totalCovers > 0
+              ? `Net saved vs no prepay: ${currencyFmt(netSaving)} (after commissions)`
               : "No prepayments yet"
           }
         />

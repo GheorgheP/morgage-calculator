@@ -7,14 +7,25 @@ import {
   calculateMonthlyPayment,
   addMonths,
   parseISODate,
-  mergeCovers,
+  netPrepaymentSaving,
 } from "../src/lib/mortgage.ts"
 import {
   parsePersisted,
   serializePersisted,
 } from "../src/lib/persistence.ts"
 
+const NO_AUTO = { amount: 0, every: 0 }
+const LOAN = { amount: 100000, annualRate: 5.5, termYears: 25 }
+
 let failures = 0
+function check(ok, label) {
+  if (!ok) {
+    failures++
+    console.error(`FAIL ${label}`)
+  } else {
+    console.log(`ok   ${label}`)
+  }
+}
 function approx(a, b, eps = 0.5, label = "") {
   const ok = Math.abs(a - b) <= eps
   if (!ok) {
@@ -31,7 +42,7 @@ function approx(a, b, eps = 0.5, label = "") {
   const m = calculateMonthlyPayment(100000, 5.5, 300)
   approx(m, 614.09, 0.5, "100k/5.5%/25y monthly payment")
 
-  const r = generateSchedule({ amount: 100000, annualRate: 5.5, termYears: 25 }, {}, "shorten")
+  const r = generateSchedule({ amount: 100000, annualRate: 5.5, termYears: 25 }, {}, NO_AUTO, "shorten")
   approx(r.monthsActual, 300, 0, "schedule length")
   approx(r.rows[r.rows.length - 1].balance, 0, 0.01, "final balance is zero")
   // Total interest over 25y on 100k @ 5.5% should be ≈ 84,226 (= 614.09 * 300 - 100000)
@@ -40,7 +51,7 @@ function approx(a, b, eps = 0.5, label = "") {
 
 // --- Test 2: zero interest rate ---
 {
-  const r = generateSchedule({ amount: 12000, annualRate: 0, termYears: 1 }, {}, "shorten")
+  const r = generateSchedule({ amount: 12000, annualRate: 0, termYears: 1 }, {}, NO_AUTO, "shorten")
   approx(r.baseMonthlyPayment, 1000, 0.001, "0% rate => principal/n")
   approx(r.totalInterest, 0, 0.001, "0% rate => zero total interest")
   approx(r.monthsActual, 12, 0, "0% rate => exact term")
@@ -48,10 +59,11 @@ function approx(a, b, eps = 0.5, label = "") {
 
 // --- Test 3: prepayment in shorten mode reduces months and total interest ---
 {
-  const baseline = generateSchedule({ amount: 100000, annualRate: 5.5, termYears: 25 }, {}, "shorten")
+  const baseline = generateSchedule({ amount: 100000, annualRate: 5.5, termYears: 25 }, {}, NO_AUTO, "shorten")
   const withCover = generateSchedule(
     { amount: 100000, annualRate: 5.5, termYears: 25 },
     { 1: 10000 }, // pay 10k in month 1; 1% commission => 9900 reduces principal
+    NO_AUTO,
     "shorten",
     0.01
   )
@@ -73,11 +85,10 @@ function approx(a, b, eps = 0.5, label = "") {
 
 // --- Test 4: prepayment in lower mode keeps the term, reduces installment ---
 {
-  const baseline = generateSchedule({ amount: 100000, annualRate: 5.5, termYears: 25 }, {}, "lower")
+  const baseline = generateSchedule({ amount: 100000, annualRate: 5.5, termYears: 25 }, {}, NO_AUTO, "lower")
   const withCover = generateSchedule(
     { amount: 100000, annualRate: 5.5, termYears: 25 },
-    { 1: 10000 },
-    "lower",
+    { 1: 10000 }, NO_AUTO, "lower",
     0.01
   )
   approx(withCover.monthsActual, baseline.monthsActual, 0, "lower mode keeps term")
@@ -93,7 +104,7 @@ function approx(a, b, eps = 0.5, label = "") {
 
 // --- Test 5: invariant per row -- payment = interest + principal  (within 1c) ---
 {
-  const r = generateSchedule({ amount: 250000, annualRate: 4.25, termYears: 30 }, { 24: 5000, 60: 7500 }, "shorten")
+  const r = generateSchedule({ amount: 250000, annualRate: 4.25, termYears: 30 }, { 24: 5000, 60: 7500 }, NO_AUTO, "shorten")
   for (const row of r.rows) {
     if (Math.abs(row.payment - (row.interest + row.principal)) > 0.011) {
       failures++
@@ -155,101 +166,120 @@ function approx(a, b, eps = 0.5, label = "") {
   }
 }
 
-// --- Test 8: mergeCovers — auto fires on multiples of `every` only ---
+// --- Test 8: auto cover fires on multiples of `every` only ---
 {
-  const merged = mergeCovers({}, { amount: 1000, every: 12 }, 36)
-  const months = Object.keys(merged).map(Number).sort((a, b) => a - b)
-  const expected = [12, 24, 36]
-  if (JSON.stringify(months) !== JSON.stringify(expected)) {
-    failures++
-    console.error(`FAIL auto fires on multiples: got ${months}`)
-  } else {
-    console.log(`ok   auto fires on multiples of 12 only: [${months}]`)
-  }
-  if (merged[12] !== 1000) {
-    failures++
-    console.error(`FAIL auto amount: got ${merged[12]}`)
-  } else {
-    console.log(`ok   auto amount = 1000`)
-  }
+  const r = generateSchedule(LOAN, {}, { amount: 1000, every: 12 }, "shorten", 0.01)
+  const fired = r.rows.filter((x) => x.cover > 0).map((x) => x.month).slice(0, 3)
+  check(JSON.stringify(fired) === "[12,24,36]", `auto fires on 12, 24, 36 (got ${fired})`)
+  check(r.rows[11].cover === 1000, "auto amount = 1000")
 }
 
-// --- Test 9: mergeCovers — manual overrides auto ---
+// --- Test 9: manual overrides auto; manual 0 skips ---
 {
-  const merged = mergeCovers(
+  const r = generateSchedule(
+    LOAN,
     { 12: 5000, 24: 0 },
     { amount: 1000, every: 12 },
-    48
-  )
-  // Expectations:
-  //   month 12 -> manual 5000 (overrides auto 1000)
-  //   month 24 -> manual 0 (skip; not in map)
-  //   month 36 -> auto 1000
-  //   month 48 -> auto 1000
-  if (merged[12] !== 5000) {
-    failures++
-    console.error(`FAIL manual overrides auto: month 12 = ${merged[12]}`)
-  } else {
-    console.log(`ok   manual override (5000) wins over auto (1000) at month 12`)
-  }
-  if (Object.prototype.hasOwnProperty.call(merged, 24)) {
-    failures++
-    console.error(`FAIL manual 0 should remove month 24, got ${merged[24]}`)
-  } else {
-    console.log(`ok   manual 0 at month 24 skips the auto cover`)
-  }
-  if (merged[36] !== 1000 || merged[48] !== 1000) {
-    failures++
-    console.error(`FAIL auto continues after override: 36=${merged[36]} 48=${merged[48]}`)
-  } else {
-    console.log(`ok   auto continues firing at months 36 and 48`)
-  }
-}
-
-// --- Test 10: mergeCovers — disabled auto ---
-{
-  const a = mergeCovers({ 6: 500 }, { amount: 0, every: 12 }, 24)
-  const b = mergeCovers({ 6: 500 }, { amount: 1000, every: 0 }, 24)
-  if (Object.keys(a).length !== 1 || a[6] !== 500) {
-    failures++
-    console.error(`FAIL amount=0 should disable auto, got ${JSON.stringify(a)}`)
-  } else {
-    console.log(`ok   amount=0 disables auto, manual still works`)
-  }
-  if (Object.keys(b).length !== 1 || b[6] !== 500) {
-    failures++
-    console.error(`FAIL every=0 should disable auto, got ${JSON.stringify(b)}`)
-  } else {
-    console.log(`ok   every=0 disables auto, manual still works`)
-  }
-}
-
-// --- Test 11: end-to-end — auto cover actually shortens the loan ---
-{
-  // 100k @ 5.5% over 25y, 5000 every 12 months, shorten mode.
-  const merged = mergeCovers({}, { amount: 5000, every: 12 }, 25 * 12)
-  const r = generateSchedule(
-    { amount: 100000, annualRate: 5.5, termYears: 25 },
-    merged,
     "shorten",
     0.01
   )
-  if (r.monthsActual >= 25 * 12) {
-    failures++
-    console.error(`FAIL auto cover should shorten, got ${r.monthsActual}mo`)
-  } else {
-    console.log(`ok   recurring 5000/12mo shortens 300mo loan to ${r.monthsActual}mo`)
+  check(r.rows[11].cover === 5000, "manual 5000 wins over auto at month 12")
+  check(r.rows[23].cover === 0, "manual 0 skips the auto cover at month 24")
+  check(r.rows[35].cover === 1000 && r.rows[47].cover === 1000, "auto continues at months 36 and 48")
+}
+
+// --- Test 10: disabled auto ---
+{
+  const a = generateSchedule(LOAN, { 6: 500 }, { amount: 0, every: 12 }, "shorten", 0.01)
+  const b = generateSchedule(LOAN, { 6: 500 }, { amount: 1000, every: 0 }, "shorten", 0.01)
+  check(a.totalCovers === 500, "amount=0 disables auto, manual still works")
+  check(b.totalCovers === 500, "every=0 disables auto, manual still works")
+}
+
+// --- Test 11: end-to-end — auto cover shortens the loan, commission is 1% ---
+{
+  const r = generateSchedule(LOAN, {}, { amount: 5000, every: 12 }, "shorten", 0.01)
+  check(r.monthsActual < 300, `recurring 5000/12mo shortens 300mo loan to ${r.monthsActual}mo`)
+  check(Math.abs(r.totalCommissions / r.totalCovers - 0.01) < 1e-9, "commissions are exactly 1% of total covers")
+}
+
+// --- Test 11b: top-up in lower mode adds (base - current) payment ---
+{
+  const r = generateSchedule(
+    LOAN,
+    {},
+    { amount: 5000, every: 12, topUpFromPayment: true },
+    "lower",
+    0.01
+  )
+  const expected = 5000 + Math.ceil(r.baseMonthlyPayment - r.rows[23].payment)
+  check(r.rows[23].cover === expected, `top-up at month 24: ${r.rows[23].cover} = ${expected}`)
+}
+
+// --- Test 11c (regression): savings = interest avoided - commissions ---
+// Comparing installment totals counted the prepaid principal as "saved".
+{
+  const baseline = generateSchedule(LOAN, {}, NO_AUTO, "shorten", 0.01)
+  const r = generateSchedule(LOAN, { 1: 10000 }, NO_AUTO, "shorten", 0.01)
+  const saving = netPrepaymentSaving(baseline, r)
+  approx(
+    saving,
+    baseline.totalInterest - r.totalInterest - 100,
+    0.001,
+    "net saving = interest avoided - commission"
+  )
+  // The buggy formula (installment totals) overstates by ~ the prepaid principal.
+  const buggy = baseline.totalPaid - r.totalPaid
+  check(buggy - saving > 9000, `saving excludes prepaid principal (${saving.toFixed(2)} vs old ${buggy.toFixed(2)})`)
+  // Net of commission: holds for every cover, whatever the loan.
+  for (const mode of ["shorten", "lower"]) {
+    const b = generateSchedule(LOAN, {}, NO_AUTO, mode, 0.01)
+    const x = generateSchedule(LOAN, {}, { amount: 5000, every: 12 }, mode, 0.01)
+    approx(
+      netPrepaymentSaving(b, x),
+      b.totalInterest - x.totalInterest - x.totalCommissions,
+      0.001,
+      `${mode}: saving is net of commissions`
+    )
   }
-  // Expected commission ≈ count_of_auto_months * 5000 * 0.01.
-  // The schedule may finish before all scheduled covers are applied, so just
-  // check that totalCommissions > 0 and is exactly 1% of totalCovers.
-  const ratio = r.totalCommissions / r.totalCovers
-  if (Math.abs(ratio - 0.01) > 1e-9) {
-    failures++
-    console.error(`FAIL commission ratio: got ${ratio}`)
-  } else {
-    console.log(`ok   commissions are exactly 1% of total covers`)
+}
+
+// --- Test 11d (regression): cover larger than balance is capped ---
+// Previously the full cover + commission was charged while only the remaining
+// balance was reduced, so the surplus vanished from "Out of pocket".
+{
+  const noLost = (r) =>
+    r.rows.every((x) => Math.abs(x.cover - x.commission - x.effectivePrincipalReduction) < 1e-6)
+
+  // Manual cover near the end.
+  const r = generateSchedule(LOAN, { 299: 5000 }, NO_AUTO, "shorten", 0.01)
+  const row = r.rows[298]
+  check(r.monthsActual === 299, "oversized cover at month 299 ends the loan there")
+  approx(row.balance, 0, 0.001, "balance cleared")
+  approx(row.cover, row.effectivePrincipalReduction / 0.99, 0.001, "cover capped at balance / (1 - commission)")
+  approx(row.commission, row.cover * 0.01, 0.001, "commission charged only on the capped cover")
+  check(row.cover < 1000, `capped cover ${row.cover.toFixed(2)} << entered 5000`)
+
+  // Cover on the final installment month: nothing left to prepay.
+  const f = generateSchedule(LOAN, { 300: 1000 }, NO_AUTO, "shorten", 0.01).rows[299]
+  check(f.cover === 0 && f.commission === 0, "cover on final month is not charged")
+  approx(f.totalOutOfPocket, f.payment, 0.001, "final month out of pocket = installment only")
+
+  // Auto cover overshooting at the end, both modes.
+  for (const mode of ["shorten", "lower"]) {
+    const a = generateSchedule(LOAN, {}, { amount: 5000, every: 12 }, mode, 0.01)
+    check(noLost(a), `${mode}: every cover euro is either commission or principal`)
+    approx(
+      a.totalOutOfPocket,
+      LOAN.amount + a.totalInterest + a.totalCommissions,
+      0.01,
+      `${mode}: out of pocket = principal + interest + commissions`
+    )
   }
+
+  // Zero commission: cover capped exactly at the balance.
+  const z = generateSchedule(LOAN, { 299: 5000 }, NO_AUTO, "shorten", 0)
+  approx(z.rows[298].cover, z.rows[298].effectivePrincipalReduction, 0.001, "0% commission: cover = balance")
 }
 
 // --- Test 12: persistence round-trip ---
@@ -264,6 +294,7 @@ function approx(a, b, eps = 0.5, label = "") {
     startDateStr: "2026-04-26",
     autoAmountStr: "1500",
     autoEveryStr: "6",
+    autoTopUp: true,
     manualCovers: { 12: 5000, 24: 0, 36: 7500 },
   }
   const raw = serializePersisted(state)
